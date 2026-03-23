@@ -8,13 +8,11 @@ from homeassistant.components.light import (
     LightEntity,
 )
 
-# 显式定义所有常量，确保兼容性
+# 常量定义
 SUPPORT_BRIGHTNESS = 1
 SUPPORT_COLOR_TEMP = 2
 SUPPORT_COLOR = 4
-SUPPORT_ONOFF = 0  # 补全缺失的常量
 
-from homeassistant.const import CONF_DEVICE_ID
 from .const import DOMAIN, TERNCY_HUB_ID
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,8 +57,12 @@ class TerncyLight(LightEntity):
         self._update_features()
 
     def _update_features(self):
-        """Update supported features and color modes."""
-        features = self._device.get("features", [])
+        """Update supported features and color modes with safety checks."""
+        # 深度修复：确保 features 不为 None，防止 TypeError
+        features = self._device.get("features")
+        if features is None:
+            features = []
+            
         self._supported_features = 0
         self._supported_color_modes = set()
 
@@ -81,48 +83,39 @@ class TerncyLight(LightEntity):
 
     @property
     def unique_id(self):
-        """Return a unique ID."""
         return self._id
 
     @property
     def name(self):
-        """Return the name of the light."""
         return self._name
 
     @property
     def available(self):
-        """Return True if entity is available."""
         return self._available
 
     @property
     def is_on(self):
-        """Return True if light is on."""
         return self._state
 
     @property
     def brightness(self):
-        """Return the brightness of the light."""
         return self._brightness
 
     @property
     def hs_color(self):
-        """Return the hs color of the light."""
         return self._hs_color
 
     @property
     def color_temp(self):
-        """Return the color temperature of the light."""
         return self._color_temp
 
     @property
     def supported_features(self):
-        """Flag supported features."""
         return self._supported_features
 
     @property
     def supported_color_modes(self) -> set[ColorMode] | None:
-        """Flag supported color modes."""
-        # 核心逻辑：如果不支持色温，强制屏蔽
+        """Flag supported color modes (Strict Fix for 2026)."""
         if not (self._supported_features & SUPPORT_COLOR_TEMP):
             if self._supported_features & SUPPORT_BRIGHTNESS:
                 return {ColorMode.BRIGHTNESS}
@@ -154,6 +147,9 @@ class TerncyLight(LightEntity):
 
     def update_state(self, msg_data):
         """Update the light state from hub message."""
+        if not msg_data:
+            return
+            
         if "state" in msg_data:
             self._state = msg_data["state"] == 1
         if "brightness" in msg_data:
@@ -166,10 +162,5 @@ class TerncyLight(LightEntity):
             self._hs_color = (color.get("h", 0), color.get("s", 0))
             self._color_mode = ColorMode.HS
         
-        if self._color_mode == ColorMode.UNKNOWN or self._color_mode is None:
-            if self._supported_features & SUPPORT_COLOR: self._color_mode = ColorMode.HS
-            elif self._supported_features & SUPPORT_COLOR_TEMP: self._color_mode = ColorMode.COLOR_TEMP
-            elif self._supported_features & SUPPORT_BRIGHTNESS: self._color_mode = ColorMode.BRIGHTNESS
-            else: self._color_mode = ColorMode.ONOFF
-
+        # 强制同步状态
         self.async_write_ha_state()
