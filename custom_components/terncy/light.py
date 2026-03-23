@@ -6,13 +6,13 @@ from homeassistant.components.light import (
     ATTR_HS_COLOR,
     ColorMode,
     LightEntity,
-    # 2026 兼容性修复：从常量模块导入
 )
 
-# 直接定义常量以确保兼容性
+# 显式定义所有常量，确保兼容性
 SUPPORT_BRIGHTNESS = 1
 SUPPORT_COLOR_TEMP = 2
 SUPPORT_COLOR = 4
+SUPPORT_ONOFF = 0  # 补全缺失的常量
 
 from homeassistant.const import CONF_DEVICE_ID
 from .const import DOMAIN, TERNCY_HUB_ID
@@ -21,9 +21,13 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up the Terncy light platform."""
-    hub_id = config_entry.data[TERNCY_HUB_ID]
+    hub_id = config_entry.data.get(TERNCY_HUB_ID)
+    if not hub_id:
+        return
+    
     hub = hass.data[DOMAIN].get(hub_id)
     if not hub:
+        _LOGGER.error("Terncy hub not found for id %s", hub_id)
         return
 
     def add_entities(devices):
@@ -117,7 +121,8 @@ class TerncyLight(LightEntity):
 
     @property
     def supported_color_modes(self) -> set[ColorMode] | None:
-        """Flag supported color modes (Strict Fix for 2026)."""
+        """Flag supported color modes."""
+        # 核心逻辑：如果不支持色温，强制屏蔽
         if not (self._supported_features & SUPPORT_COLOR_TEMP):
             if self._supported_features & SUPPORT_BRIGHTNESS:
                 return {ColorMode.BRIGHTNESS}
@@ -135,21 +140,12 @@ class TerncyLight(LightEntity):
     async def async_turn_on(self, **kwargs):
         """Turn on the light."""
         params = {"state": 1}
-
         if ATTR_BRIGHTNESS in kwargs:
             params["brightness"] = int(kwargs[ATTR_BRIGHTNESS] / 2.55)
-
-        if ATTR_COLOR_TEMP in kwargs:
-            if self._supported_features & SUPPORT_COLOR_TEMP:
-                params["color_temp"] = kwargs[ATTR_COLOR_TEMP]
-
-        if ATTR_HS_COLOR in kwargs:
-            if self._supported_features & SUPPORT_COLOR:
-                params["color"] = {
-                    "h": int(kwargs[ATTR_HS_COLOR][0]),
-                    "s": int(kwargs[ATTR_HS_COLOR][1]),
-                }
-
+        if ATTR_COLOR_TEMP in kwargs and (self._supported_features & SUPPORT_COLOR_TEMP):
+            params["color_temp"] = kwargs[ATTR_COLOR_TEMP]
+        if ATTR_HS_COLOR in kwargs and (self._supported_features & SUPPORT_COLOR):
+            params["color"] = {"h": int(kwargs[ATTR_HS_COLOR][0]), "s": int(kwargs[ATTR_HS_COLOR][1])}
         await self._hub.edit_device(self._id, params)
 
     async def async_turn_off(self, **kwargs):
@@ -160,30 +156,20 @@ class TerncyLight(LightEntity):
         """Update the light state from hub message."""
         if "state" in msg_data:
             self._state = msg_data["state"] == 1
-        
         if "brightness" in msg_data:
             self._brightness = int(msg_data["brightness"] * 2.55)
-
         if "color_temp" in msg_data:
             self._color_temp = msg_data["color_temp"]
-            if self._supported_features & SUPPORT_COLOR_TEMP:
-                self._color_mode = ColorMode.COLOR_TEMP
-            else:
-                self._color_mode = ColorMode.BRIGHTNESS
-
+            self._color_mode = ColorMode.COLOR_TEMP if (self._supported_features & SUPPORT_COLOR_TEMP) else ColorMode.BRIGHTNESS
         if "color" in msg_data:
             color = msg_data["color"]
             self._hs_color = (color.get("h", 0), color.get("s", 0))
             self._color_mode = ColorMode.HS
-
+        
         if self._color_mode == ColorMode.UNKNOWN or self._color_mode is None:
-            if self._supported_features & SUPPORT_COLOR:
-                self._color_mode = ColorMode.HS
-            elif self._supported_features & SUPPORT_COLOR_TEMP:
-                self._color_mode = ColorMode.COLOR_TEMP
-            elif self._supported_features & SUPPORT_BRIGHTNESS:
-                self._color_mode = ColorMode.BRIGHTNESS
-            else:
-                self._color_mode = ColorMode.ONOFF
+            if self._supported_features & SUPPORT_COLOR: self._color_mode = ColorMode.HS
+            elif self._supported_features & SUPPORT_COLOR_TEMP: self._color_mode = ColorMode.COLOR_TEMP
+            elif self._supported_features & SUPPORT_BRIGHTNESS: self._color_mode = ColorMode.BRIGHTNESS
+            else: self._color_mode = ColorMode.ONOFF
 
         self.async_write_ha_state()
