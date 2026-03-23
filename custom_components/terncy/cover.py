@@ -1,5 +1,4 @@
 """Cover platform support for Terncy."""
-
 import logging
 
 from homeassistant.components.cover import (
@@ -18,24 +17,23 @@ from .utils import get_attr_value
 
 _LOGGER = logging.getLogger(__name__)
 
-
 async def async_setup_entry(
     hass, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ):
     TerncyEntity.ADD[f"{entry.entry_id}.cover"] = async_add_entities
 
-
 K_CURTAIN_PERCENT = "curtainPercent"
 K_CURTAIN_MOTOR_STATUS = "curtainMotorStatus"
 K_TILT_ANGLE = "tiltAngle"
 
-
 def get_tilt_angle(attrs: list[AttrValue]) -> int | None:
+    # 增加空值判断，防止迭代错误
+    if attrs is None:
+        return None
     tilt_angle = get_attr_value(attrs, K_TILT_ANGLE)
     if tilt_angle is not None and -90 <= tilt_angle <= 90:
         return tilt_angle
     return None
-
 
 def _create_entity(
     gateway, eid: str, description: TerncyCoverDescription, init_states: list[AttrValue]
@@ -45,12 +43,12 @@ def _create_entity(
     else:
         return TerncyCover(gateway, eid, description, init_states)
 
-
 class TerncyCover(TerncyEntity, CoverEntity):
     """Represents a Terncy Cover."""
 
     entity_description: TerncyCoverDescription
 
+    # 2026 兼容性校对：确保使用最新的 Feature 位
     _attr_supported_features = (
         CoverEntityFeature.OPEN
         | CoverEntityFeature.CLOSE
@@ -59,18 +57,24 @@ class TerncyCover(TerncyEntity, CoverEntity):
     )
 
     def update_state(self, attrs: list[AttrValue]):
-        # _LOGGER.debug("%s <= %s", self.eid, attrs)
+        if attrs is None:
+            return
+            
         if (value := get_attr_value(attrs, K_CURTAIN_PERCENT)) is not None:
             self._attr_current_cover_position = value
         if (motor_status := get_attr_value(attrs, K_CURTAIN_MOTOR_STATUS)) is not None:
             self._attr_is_opening = motor_status == 1
             self._attr_is_closing = motor_status == 2
+        
         if self.hass:
             self.async_write_ha_state()
 
     @property
     def is_closed(self) -> bool | None:
         """Return if the cover is closed or not."""
+        # 防止由于 _attr_current_cover_position 为 None 导致的报错
+        if self._attr_current_cover_position is None:
+            return None
         return self._attr_current_cover_position == 0
 
     async def async_open_cover(self, **kwargs):
@@ -87,19 +91,20 @@ class TerncyCover(TerncyEntity, CoverEntity):
 
     async def async_set_cover_position(self, **kwargs):
         """Move the cover to a specific position."""
-        _LOGGER.debug("%s async_set_cover_position: %s", self.eid, kwargs)
-        percent = kwargs[ATTR_POSITION]
-        await self.api.set_attribute(self.eid, K_CURTAIN_PERCENT, percent)
-        self.async_write_ha_state()
+        if ATTR_POSITION in kwargs:
+            percent = kwargs[ATTR_POSITION]
+            await self.api.set_attribute(self.eid, K_CURTAIN_PERCENT, percent)
+            self.async_write_ha_state()
 
     async def async_stop_cover(self, **kwargs) -> None:
         """Stop the cover."""
-        _LOGGER.debug("%s async_stop_cover: %s", self.eid, kwargs)
         await self.api.set_attribute(self.eid, K_CURTAIN_MOTOR_STATUS, 0)
         self.async_write_ha_state()
 
 
 class TerncyTiltCover(TerncyCover):
+    """Represents a Terncy Cover with Tilt (e.g. Blinds)."""
+    
     _attr_supported_features = (
         CoverEntityFeature.OPEN
         | CoverEntityFeature.CLOSE
@@ -115,47 +120,34 @@ class TerncyTiltCover(TerncyCover):
 
     @property
     def current_cover_tilt_position(self) -> int | None:
-        """Return current position of cover tilt.
-
-        None is unknown, 0 is closed, 100 is fully open.
-        """
         if self._tilt_angle is None:
             return None
         return 100 - round(abs(self._tilt_angle) / 0.9)
 
     def update_state(self, attrs: list[AttrValue]):
-        # _LOGGER.debug("[%s] <= %s", self.unique_id, attrs)
         if (tilt_angle := get_tilt_angle(attrs)) is not None:
             self._tilt_angle = tilt_angle
         super().update_state(attrs)
 
     async def async_open_cover_tilt(self, **kwargs) -> None:
-        """Open the cover tilt."""
-        _LOGGER.debug("%s async_open_cover_tilt: %s", self.eid, kwargs)
         await self.api.set_attribute(self.eid, K_TILT_ANGLE, 0)
 
     async def async_close_cover_tilt(self, **kwargs) -> None:
-        """Close the cover tilt."""
-        _LOGGER.debug("%s async_close_cover_tilt: %s", self.eid, kwargs)
         if self._tilt_angle is not None and self._tilt_angle < 0:
             await self.api.set_attribute(self.eid, K_TILT_ANGLE, -90)
         else:
             await self.api.set_attribute(self.eid, K_TILT_ANGLE, 90)
 
     async def async_set_cover_tilt_position(self, **kwargs) -> None:
-        """Move the cover tilt to a specific position."""
-        _LOGGER.debug("%s async_set_cover_tilt_position: %s", self.eid, kwargs)
-        tilt_position = kwargs[ATTR_TILT_POSITION]
-        if self._tilt_angle is not None and self._tilt_angle < 0:
-            tilt_angle = -90 + round(tilt_position * 0.9)
-        else:
-            tilt_angle = 90 - round(tilt_position * 0.9)
-        await self.api.set_attribute(self.eid, K_TILT_ANGLE, tilt_angle)
+        if ATTR_TILT_POSITION in kwargs:
+            tilt_position = kwargs[ATTR_TILT_POSITION]
+            if self._tilt_angle is not None and self._tilt_angle < 0:
+                tilt_angle = -90 + round(tilt_position * 0.9)
+            else:
+                tilt_angle = 90 - round(tilt_position * 0.9)
+            await self.api.set_attribute(self.eid, K_TILT_ANGLE, tilt_angle)
 
     async def async_stop_cover_tilt(self, **kwargs) -> None:
-        """Stop the cover."""
-        _LOGGER.debug("%s async_stop_cover_tilt: %s", self.eid, kwargs)
         await self.api.set_attribute(self.eid, K_CURTAIN_MOTOR_STATUS, 0)
-
 
 TerncyEntity.NEW["cover"] = _create_entity
