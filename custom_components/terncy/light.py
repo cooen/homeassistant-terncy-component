@@ -6,10 +6,10 @@ from homeassistant.components.light import (
     ATTR_HS_COLOR,
     ColorMode,
     LightEntity,
-    ColorMode,
+    # 2026 兼容性修复：从常量模块导入
 )
 
-# 导入必要的常量
+# 直接定义常量以确保兼容性
 SUPPORT_BRIGHTNESS = 1
 SUPPORT_COLOR_TEMP = 2
 SUPPORT_COLOR = 4
@@ -22,7 +22,9 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up the Terncy light platform."""
     hub_id = config_entry.data[TERNCY_HUB_ID]
-    hub = hass.data[DOMAIN][hub_id]
+    hub = hass.data[DOMAIN].get(hub_id)
+    if not hub:
+        return
 
     def add_entities(devices):
         async_add_entities(
@@ -70,7 +72,6 @@ class TerncyLight(LightEntity):
             self._supported_features |= SUPPORT_COLOR
             self._supported_color_modes.add(ColorMode.HS)
 
-        # 默认回退逻辑
         if not self._supported_color_modes:
             self._supported_color_modes.add(ColorMode.ONOFF)
 
@@ -116,8 +117,7 @@ class TerncyLight(LightEntity):
 
     @property
     def supported_color_modes(self) -> set[ColorMode] | None:
-        """Flag supported color modes (HA 2026 Strict Check)."""
-        # 核心修复：如果硬件不支持色温，强制只返回亮度或开关模式
+        """Flag supported color modes (Strict Fix for 2026)."""
         if not (self._supported_features & SUPPORT_COLOR_TEMP):
             if self._supported_features & SUPPORT_BRIGHTNESS:
                 return {ColorMode.BRIGHTNESS}
@@ -127,7 +127,6 @@ class TerncyLight(LightEntity):
     @property
     def color_mode(self) -> ColorMode | str | None:
         """Return the current color mode of the light."""
-        # 核心修复：防止上报硬件不支持的 color_temp 导致 HA 崩溃
         if not (self._supported_features & SUPPORT_COLOR_TEMP):
             if self._color_mode == ColorMode.COLOR_TEMP:
                 return ColorMode.BRIGHTNESS
@@ -141,7 +140,6 @@ class TerncyLight(LightEntity):
             params["brightness"] = int(kwargs[ATTR_BRIGHTNESS] / 2.55)
 
         if ATTR_COLOR_TEMP in kwargs:
-            # 只有硬件支持时才允许发送色温指令
             if self._supported_features & SUPPORT_COLOR_TEMP:
                 params["color_temp"] = kwargs[ATTR_COLOR_TEMP]
 
@@ -168,7 +166,6 @@ class TerncyLight(LightEntity):
 
         if "color_temp" in msg_data:
             self._color_temp = msg_data["color_temp"]
-            # 仅当硬件支持时才切换到色温模式，否则降级为亮度模式
             if self._supported_features & SUPPORT_COLOR_TEMP:
                 self._color_mode = ColorMode.COLOR_TEMP
             else:
@@ -179,7 +176,6 @@ class TerncyLight(LightEntity):
             self._hs_color = (color.get("h", 0), color.get("s", 0))
             self._color_mode = ColorMode.HS
 
-        # 兜底逻辑：确保 color_mode 永远有效
         if self._color_mode == ColorMode.UNKNOWN or self._color_mode is None:
             if self._supported_features & SUPPORT_COLOR:
                 self._color_mode = ColorMode.HS
